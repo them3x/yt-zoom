@@ -1,0 +1,12 @@
+{
+  "manifest_version": 2,
+  "name": "YouTube Video Zoom",
+  "version": "1.0",
+  "description": "Zoom in on YouTube videos using the mouse scroll wheel.",
+  "content_scripts": [
+    {
+      "matches": ["*://www.youtube.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
