@@ -11,20 +11,70 @@
   let startX, startY, lastX, lastY;
   let minimap = null;
   let rafId = null;
+  let minimapEnabled = true;
+  let zoomDisabled = false;
+
+  // Desfaz qualquer zoom/pan em curso e esconde o minimapa. Usado quando
+  // "Stop zoom" é marcado em tempo real (o usuário pode estar com zoom
+  // aplicado no momento em que desliga a extensão).
+  function resetZoom() {
+    scale = 1; panX = 0; panY = 0;
+    const video = getVideo();
+    if (video) applyTransform(video, true);
+  }
+
+  browser.storage.local
+    .get({ minimapEnabled: true, zoomDisabled: false })
+    .then((result) => {
+      minimapEnabled = result.minimapEnabled;
+      zoomDisabled = result.zoomDisabled;
+      if (!minimapEnabled && minimap) minimap.wrap.style.display = 'none';
+      if (zoomDisabled) resetZoom();
+    });
+
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+
+    if (changes.minimapEnabled) {
+      minimapEnabled = changes.minimapEnabled.newValue;
+      if (!minimapEnabled && minimap) {
+        minimap.wrap.style.display = 'none';
+      } else if (minimapEnabled && scale > 1) {
+        if (!minimap) minimap = createMinimap();
+        startMapLoop();
+      }
+    }
+
+    if (changes.zoomDisabled) {
+      zoomDisabled = changes.zoomDisabled.newValue;
+      if (zoomDisabled) resetZoom();
+    }
+  });
 
   function getVideo() {
     return document.querySelector("video.html5-main-video");
+  }
+
+  // O <video> recebe diretamente o transform de zoom/pan (ver applyTransform),
+  // então o próprio getBoundingClientRect() dele "anda junto" com o zoom —
+  // por isso o minimapa não pode se ancorar nele. O container do player
+  // (.html5-video-player) NUNCA recebe esse transform, só o <video> dentro
+  // dele, então serve como referência estática pra posicionar o minimapa,
+  // mesmo com o vídeo dando zoom/pan, mudando de tamanho (teatro) ou indo
+  // pra fullscreen.
+  function getAnchor(video) {
+    return video.closest('.html5-video-player') || video.parentElement || video;
   }
 
   // --- Minimap ---
   function createMinimap() {
     const wrap = document.createElement('div');
     wrap.style.cssText = `
-      position:fixed; bottom:70px; right:20px;
+      position:fixed;
       width:${MAP_W}px; border-radius:8px; overflow:hidden;
       border:2px solid rgba(255,255,255,0.25);
       box-shadow:0 4px 16px rgba(0,0,0,0.6);
-      display:none; z-index:99999; pointer-events:none;
+      display:none; z-index:2147483647; pointer-events:none;
       background:#000;
     `;
     const canvas = document.createElement('canvas');
@@ -48,7 +98,7 @@
     const { wrap, canvas, rect } = minimap;
     const video = getVideo();
 
-    if (scale <= 1 || !video || !natW) {
+    if (!minimapEnabled || scale <= 1 || !video || !natW) {
       wrap.style.display = 'none';
       return;
     }
@@ -60,6 +110,26 @@
       wrap.style.height = mapH + 'px';
     }
     wrap.style.display = 'block';
+
+    // Ancora o minimapa no canto do PLAYER (container estático — ver
+    // getAnchor), não no <video> em si, que se move/escala com o zoom.
+    // Recalculado a cada frame porque o player pode mudar de posição/tamanho
+    // (redimensionar janela, alternar modo teatro, etc). PAD é a margem em
+    // relação à borda do player; o clamp evita que o minimapa saia da área
+    // do player quando ele é pequeno demais pra caber com a margem cheia.
+    const vr = getAnchor(video).getBoundingClientRect();
+    const PAD = 16;
+    const left = Math.max(vr.left + 8, Math.min(vr.right - MAP_W - PAD, vr.right - MAP_W - 8));
+    const top  = Math.max(vr.top + 8,  Math.min(vr.bottom - mapH - PAD, vr.bottom - mapH - 8));
+    wrap.style.left = left.toFixed(1) + 'px';
+    wrap.style.top  = top.toFixed(1) + 'px';
+
+    // Modo tela cheia via Fullscreen API cria um "top layer": elementos
+    // fixos fora do elemento fullscreen ficam escondidos atrás dele. Por
+    // isso o minimapa precisa morar dentro do elemento em fullscreen
+    // enquanto ele existir, e voltar pro body quando sair.
+    const container = document.fullscreenElement || document.body;
+    if (wrap.parentElement !== container) container.appendChild(wrap);
 
     // Desenha o frame atual do vídeo (sem zoom)
     try {
@@ -124,6 +194,8 @@
 
   // --- Eventos ---
   document.addEventListener("wheel", function (e) {
+    if (zoomDisabled) return;   // "Stop zoom" marcado: comporta-se como se a extensão não existisse
+
     const video = getVideo();
     if (!video) return;
     const r = video.getBoundingClientRect();
@@ -138,7 +210,7 @@
     if (scale === 1) {
       natLeft = r.left; natTop = r.top;
       natW = r.width;   natH = r.height;
-      if (!minimap) minimap = createMinimap();
+      if (!minimap && minimapEnabled) minimap = createMinimap();
     }
 
     ox = ((e.clientX - r.left) / r.width)  * 100;
